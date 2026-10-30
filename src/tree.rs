@@ -1,12 +1,12 @@
-
 #[derive(PartialEq, Copy, Clone)]
 pub enum State {
     E,
     O,
-    X
+    X,
 }
 
-pub enum Desision {
+#[derive(Clone, Copy, PartialEq)]
+pub enum Decision {
     TL,
     TM,
     TR,
@@ -16,25 +16,25 @@ pub enum Desision {
     BL,
     BM,
     BR,
-    NA
+    NA,
 }
 
 #[derive(Clone, Copy)]
 pub struct Board {
     pub turn: bool,
-    pub board: [State; 9]
+    pub board: [State; 9],
 }
 pub struct Node<T> {
     pub obj: T,
-    pub children: Vec<Node<T>>
+    pub children: Vec<Node<T>>,
 }
 
+use Decision::*;
 use State::*;
-use Desision::*;
 use std::fmt::{self, Display, Formatter};
 
-impl Desision {
-    pub fn from_index(index: usize) -> Desision {
+impl Decision {
+    pub fn from_index(index: usize) -> Decision {
         match index {
             0 => TL,
             1 => TM,
@@ -48,38 +48,52 @@ impl Desision {
             _ => panic!("Invalid board index: {index}"),
         }
     }
+
+    pub fn from_input(input: &str) -> Option<Decision> {
+        match input.trim().to_ascii_uppercase().as_str() {
+            "TL" => Some(TL),
+            "TM" => Some(TM),
+            "TR" => Some(TR),
+            "ML" => Some(ML),
+            "MM" => Some(MM),
+            "MR" => Some(MR),
+            "BL" => Some(BL),
+            "BM" => Some(BM),
+            "BR" => Some(BR),
+            _ => None,
+        }
+    }
 }
 
-impl Board{
-    pub fn new(turn:bool, board:[State; 9])-> Board{
-        Board { 
+impl Board {
+    pub fn new(turn: bool, board: [State; 9]) -> Board {
+        Board {
             turn: turn,
-            board: board
+            board: board,
         }
     }
 
+    pub fn perm(self) -> Vec<(Decision, Board)> {
+        let mut children: Vec<(Decision, Board)> = Vec::new();
 
-
-    pub fn perm(self)-> Vec<(Desision, Board)> {
-        let mut children:Vec<(Desision, Board)> = Vec::new();
-
-        for i in 0..9{
+        for i in 0..9 {
             if self.board[i] == E {
                 let mut next: [State; 9] = self.board;
                 next[i] = if self.turn { O } else { X };
 
                 children.push((
-                    Desision::from_index(i),
+                    Decision::from_index(i),
                     Board {
                         board: next,
-                        turn: !self.turn
-                    }));
+                        turn: !self.turn,
+                    },
+                ));
             }
         }
         children //return
     }
 
-    pub fn is_terminal(self) -> bool {
+    pub fn is_win(self, turn: State) -> bool {
         const WIN_LINES: [[usize; 3]; 8] = [
             [0, 1, 2],
             [3, 4, 5],
@@ -91,47 +105,53 @@ impl Board{
             [2, 4, 6],
         ];
 
-        let has_winner = WIN_LINES.iter().any(|line| {
+        let is_winner = WIN_LINES.iter().any(|line| {
             let [a, b, c] = *line;
 
-            self.board[a] != State::E
+            self.board[a] == turn
                 && self.board[a] == self.board[b]
                 && self.board[b] == self.board[c]
         });
 
-        let board_is_full =
-            self.board.iter().all(|state| *state != State::E);
+        is_winner
+    }
 
-        has_winner || board_is_full
+    pub fn is_cats(self) -> bool {
+        let board_is_full = self.board.iter().all(|state| *state != State::E);
+
+        board_is_full
     }
 }
 
-impl<T> Node<T>{
-    pub fn new(obj: T) -> Node<T>{
+impl<T> Node<T> {
+    pub fn new(obj: T) -> Node<T> {
         Node {
             obj: obj,
-            children: Vec::new()
+            children: Vec::new(),
         }
     }
 
-    pub fn add(&mut self, child: Node<T>){
+    pub fn add(&mut self, child: Node<T>) {
         self.children.push(child);
     }
 
-    pub fn display(&self) where T: Display {
+    pub fn display(&self)
+    where
+        T: Display,
+    {
         print!("{}, ", self.obj);
-        for child in &self.children{
+        for child in &self.children {
             child.display();
         }
     }
 }
 
 impl Display for State {
-    fn fmt(&self, f:&mut Formatter<'_>) -> fmt::Result{
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let character = match self {
             E => "_",
             O => "O",
-            X => "X"
+            X => "X",
         };
         write!(f, "{character}")
     }
@@ -141,20 +161,32 @@ impl Display for Board {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{}{}{}{}{}{}{}{}{}",
-            self.board[0], self.board[1], self.board[2],
-            self.board[3], self.board[4], self.board[5],
-            self.board[6], self.board[7], self.board[8],
+            "{}|{}|{}\n-+-+-\n{}|{}|{}\n-+-+-\n{}|{}|{}",
+            self.board[0],
+            self.board[1],
+            self.board[2],
+            self.board[3],
+            self.board[4],
+            self.board[5],
+            self.board[6],
+            self.board[7],
+            self.board[8],
         )
     }
 }
 
-impl Display for Desision {
+impl Display for Decision {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let text = match self {
-            TL => "TL", TM => "TM", TR => "TR",
-            ML => "ML", MM => "MM", MR => "MR",
-            BL => "BL", BM => "BM", BR => "BR",
+            TL => "TL",
+            TM => "TM",
+            TR => "TR",
+            ML => "ML",
+            MM => "MM",
+            MR => "MR",
+            BL => "BL",
+            BM => "BM",
+            BR => "BR",
             NA => "NA",
         };
 
