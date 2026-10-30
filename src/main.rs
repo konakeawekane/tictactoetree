@@ -1,153 +1,246 @@
-use crate::solution::{Game, StrategyNode};
-use crate::tree::Decision::*;
-use crate::tree::State::*;
-use crate::tree::{Board, Decision, Node, State};
-use std::io::{self, Write};
+mod tree;
 
-pub mod solution;
-pub mod tree;
+use crate::tree::{Board, Mark};
+use std::collections::HashMap;
+use std::env;
+use std::fs::{File, create_dir_all};
+use std::io::{self, BufWriter, Write};
+use std::path::{Path, PathBuf};
 
-fn main() {
-    let starting_board = Board::new(false, [E; 9]);
+#[derive(Clone)]
+struct Step {
+    ply: usize,
+    board: Board,
+    player: Mark,
+    actual_move: usize,
+    target_move: Option<usize>,
+    target_mask: u16,
+}
 
-    let (board_tree, decision_tree) = build_trees(starting_board, NA);
+struct Exporter {
+    writer: BufWriter<File>,
+    next_game_id: u64,
+    row_count: u64,
+}
 
-    // board_tree.display();
-    // decision_tree.display();
+impl Exporter {
+    fn new(path: &Path) -> io::Result<Self> {
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            create_dir_all(parent)?;
+        }
 
-    let x_strat: StrategyNode = build_strategy(&board_tree, &decision_tree, X);
-    let o_strat: StrategyNode = build_o_strategy(&board_tree, &decision_tree);
+        let mut writer = BufWriter::new(File::create(path)?);
+        writeln!(
+            writer,
+            "game_id,expert,ply,player,b0,b1,b2,b3,b4,b5,b6,b7,b8,actual_move,target_move,target_mask,outcome"
+        )?;
 
-    println!("Tic-tac-toe is ready.");
+        Ok(Self {
+            writer,
+            next_game_id: 0,
+            row_count: 0,
+        })
+    }
 
-    loop {
-        print!("Who starts? [C]omputer, [H]uman, or [Q]uit: ");
-        io::stdout().flush().expect("Failed to flush output");
+    fn write_game(&mut self, expert: Mark, steps: &[Step], terminal: Board) -> io::Result<()> {
+        let game_id = self.next_game_id;
+        let outcome = terminal.outcome();
+        self.next_game_id += 1;
 
-        let mut input = String::new();
-        io::stdin()
-            .read_line(&mut input)
-            .expect("Failed to read line");
+        for step in steps {
+            write!(
+                self.writer,
+                "{game_id},{},{},{},",
+                expert.encoded(),
+                step.ply,
+                step.player.encoded(),
+            )?;
 
-        let keep_running = match input.trim().to_ascii_lowercase().as_str() {
-            "c" | "computer" => {
-                let mut game = Game::new(&x_strat, X);
-                game.run()
+            for cell in step.board.cells {
+                write!(self.writer, "{},", cell.encoded())?;
             }
-            "h" | "human" => {
-                let mut game = Game::new(&o_strat, O);
-                game.run()
-            }
-            "q" | "quit" => break,
-            _ => {
-                println!("Please enter C, H, or Q.");
-                continue;
-            }
-        };
 
-        if !keep_running {
-            break;
+            writeln!(
+                self.writer,
+                "{},{},{},{}",
+                step.actual_move,
+                step.target_move.map_or(-1, |value| value as i32),
+                step.target_mask,
+                outcome,
+            )?;
+            self.row_count += 1;
+        }
+
+        Ok(())
+    }
+
+    fn finish(mut self) -> io::Result<(u64, u64)> {
+        self.writer.flush()?;
+        Ok((self.next_game_id, self.row_count))
+    }
+}
+
+fn minimax(board: Board, cache: &mut HashMap<Board, i8>) -> i8 {
+    if let Some(score) = cache.get(&board) {
+        return *score;
+    }
+    if board.is_terminal() {
+        return board.outcome();
+    }
+
+    let child_scores = board
+        .legal_moves()
+        .into_iter()
+        .map(|index| minimax(board.play(index).expect("legal move"), cache));
+
+    let score = match board.next {
+        Mark::X => child_scores.max(),
+        Mark::O => child_scores.min(),
+        Mark::Empty => unreachable!(),
+    }
+    .expect("nonterminal board has a move");
+
+    cache.insert(board, score);
+    score
+}
+
+fn optimal_moves(board: Board, cache: &mut HashMap<Board, i8>) -> Vec<usize> {
+    let scored_moves: Vec<(usize, i8)> = board
+        .legal_moves()
+        .into_iter()
+        .map(|index| {
+            let score = minimax(board.play(index).expect("legal move"), cache);
+            (index, score)
+        })
+        .collect();
+    let best_score = match board.next {
+        Mark::X => scored_moves.iter().map(|(_, score)| *score).max(),
+        Mark::O => scored_moves.iter().map(|(_, score)| *score).min(),
+        Mark::Empty => unreachable!(),
+    }
+    .expect("nonterminal board has a move");
+
+    scored_moves
+        .into_iter()
+        .filter_map(|(index, score)| (score == best_score).then_some(index))
+        .collect()
+}
+
+fn export_games(
+    board: Board,
+    expert: Mark,
+    cache: &mut HashMap<Board, i8>,
+    history: &mut Vec<Step>,
+    exporter: &mut Exporter,
+) -> io::Result<()> {
+    if board.is_terminal() {
+        return exporter.write_game(expert, history, board);
+    }
+
+    if board.next == expert {
+        let optimal = optimal_moves(board, cache);
+        let selected_move = optimal[0];
+        let target_mask = 1_u16 << selected_move;
+        history.push(Step {
+            ply: history.len(),
+            board,
+            player: board.next,
+            actual_move: selected_move,
+            target_move: Some(selected_move),
+            target_mask,
+        });
+        export_games(
+            board.play(selected_move).expect("expert move is legal"),
+            expert,
+            cache,
+            history,
+            exporter,
+        )?;
+        history.pop();
+    } else {
+        for response in board.legal_moves() {
+            history.push(Step {
+                ply: history.len(),
+                board,
+                player: board.next,
+                actual_move: response,
+                target_move: None,
+                target_mask: 0,
+            });
+            export_games(
+                board.play(response).expect("opponent move is legal"),
+                expert,
+                cache,
+                history,
+                exporter,
+            )?;
+            history.pop();
         }
     }
+
+    Ok(())
 }
 
-fn build_o_strategy(board_tree: &Node<Board>, decision_tree: &Node<Decision>) -> StrategyNode {
-    let mut strategy = StrategyNode::new(NA);
+fn main() -> io::Result<()> {
+    let output = env::args()
+        .nth(1)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("data/tictactoe_games.csv"));
 
-    for index in 0..board_tree.children.len() {
-        strategy.add((
-            decision_tree.children[index].obj,
-            build_strategy(
-                &board_tree.children[index],
-                &decision_tree.children[index],
-                O,
-            ),
-        ));
-    }
+    let mut exporter = Exporter::new(&output)?;
+    let mut cache = HashMap::new();
+    let mut history = Vec::with_capacity(9);
 
-    strategy
+    export_games(
+        Board::new(),
+        Mark::X,
+        &mut cache,
+        &mut history,
+        &mut exporter,
+    )?;
+    export_games(
+        Board::new(),
+        Mark::O,
+        &mut cache,
+        &mut history,
+        &mut exporter,
+    )?;
+
+    let (games, rows) = exporter.finish()?;
+    println!(
+        "Exported {games} complete games ({rows} positions) to {}",
+        output.display()
+    );
+    Ok(())
 }
 
-fn build_trees(board: Board, decision: Decision) -> (Node<Board>, Node<Decision>) {
-    let mut board_node = Node::new(board);
-    let mut decision_node = Node::new(decision);
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    // Check win condisions
-    if board_node.obj.is_cats() || board_node.obj.is_win(O) || board_node.obj.is_win(X) {
-        return (board_node, decision_node);
+    #[test]
+    fn empty_board_is_a_forced_draw() {
+        assert_eq!(minimax(Board::new(), &mut HashMap::new()), 0);
     }
 
-    for (next_decision, next_board) in board_node.obj.perm() {
-        let (board_child, decision_child) = build_trees(next_board, next_decision);
-
-        board_node.add(board_child);
-        decision_node.add(decision_child)
-    }
-
-    (board_node, decision_node)
-}
-
-pub fn minimax(node: &Node<Board>) -> i8 {
-    if node.obj.is_win(X) {
-        return 1;
-    }
-    if node.obj.is_win(O) {
-        return -1;
-    }
-    if node.obj.is_cats() {
-        return 0;
-    }
-
-    if node.obj.turn {
-        node.children
-            .iter()
-            .map(minimax)
-            .min()
-            .expect("Nonterminal board has no children")
-    } else {
-        node.children
-            .iter()
-            .map(minimax)
-            .max()
-            .expect("Nonterminal board has no children")
-    }
-}
-
-fn build_strategy(
-    board_tree: &Node<Board>,
-    decision_tree: &Node<Decision>,
-    player: State,
-) -> StrategyNode {
-    let best_index = board_tree
-        .children
-        .iter()
-        .enumerate()
-        .min_by_key(|(_, child)| {
-            let score = minimax(child);
-
-            if player == X { -score } else { score }
-        })
-        .unwrap()
-        .0;
-
-    let selected_board = &board_tree.children[best_index];
-    let selected_decisions = &decision_tree.children[best_index];
-
-    let mut strategy = StrategyNode::new(selected_decisions.obj);
-
-    // Every child here is an opponent response.
-    for index in 0..selected_board.children.len() {
-        let opponent_move = selected_decisions.children[index].obj;
-        let resulting_board = &selected_board.children[index];
-
-        let next_strategy = if resulting_board.children.is_empty() {
-            StrategyNode::new(NA)
-        } else {
-            build_strategy(resulting_board, &selected_decisions.children[index], player)
+    #[test]
+    fn expert_takes_an_immediate_win() {
+        let board = Board {
+            cells: [
+                Mark::X,
+                Mark::X,
+                Mark::Empty,
+                Mark::O,
+                Mark::O,
+                Mark::Empty,
+                Mark::Empty,
+                Mark::Empty,
+                Mark::Empty,
+            ],
+            next: Mark::X,
         };
-
-        strategy.add((opponent_move, next_strategy));
+        assert_eq!(optimal_moves(board, &mut HashMap::new()), vec![2]);
     }
-
-    strategy
 }

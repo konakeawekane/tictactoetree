@@ -1,100 +1,63 @@
-#[derive(PartialEq, Copy, Clone)]
-pub enum State {
-    E,
-    O,
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum Mark {
+    Empty,
     X,
+    O,
 }
 
-#[derive(Clone, Copy, PartialEq)]
-pub enum Decision {
-    TL,
-    TM,
-    TR,
-    ML,
-    MM,
-    MR,
-    BL,
-    BM,
-    BR,
-    NA,
+impl Mark {
+    pub fn opponent(self) -> Self {
+        match self {
+            Self::X => Self::O,
+            Self::O => Self::X,
+            Self::Empty => panic!("Empty is not a player"),
+        }
+    }
+
+    pub fn encoded(self) -> i8 {
+        match self {
+            Self::Empty => 0,
+            Self::X => 1,
+            Self::O => -1,
+        }
+    }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct Board {
-    pub turn: bool,
-    pub board: [State; 9],
-}
-pub struct Node<T> {
-    pub obj: T,
-    pub children: Vec<Node<T>>,
-}
-
-use Decision::*;
-use State::*;
-use std::fmt::{self, Display, Formatter};
-
-impl Decision {
-    pub fn from_index(index: usize) -> Decision {
-        match index {
-            0 => TL,
-            1 => TM,
-            2 => TR,
-            3 => ML,
-            4 => MM,
-            5 => MR,
-            6 => BL,
-            7 => BM,
-            8 => BR,
-            _ => panic!("Invalid board index: {index}"),
-        }
-    }
-
-    pub fn from_input(input: &str) -> Option<Decision> {
-        match input.trim().to_ascii_uppercase().as_str() {
-            "TL" => Some(TL),
-            "TM" => Some(TM),
-            "TR" => Some(TR),
-            "ML" => Some(ML),
-            "MM" => Some(MM),
-            "MR" => Some(MR),
-            "BL" => Some(BL),
-            "BM" => Some(BM),
-            "BR" => Some(BR),
-            _ => None,
-        }
-    }
+    pub cells: [Mark; 9],
+    pub next: Mark,
 }
 
 impl Board {
-    pub fn new(turn: bool, board: [State; 9]) -> Board {
-        Board {
-            turn: turn,
-            board: board,
+    pub fn new() -> Self {
+        Self {
+            cells: [Mark::Empty; 9],
+            next: Mark::X,
         }
     }
 
-    pub fn perm(self) -> Vec<(Decision, Board)> {
-        let mut children: Vec<(Decision, Board)> = Vec::new();
-
-        for i in 0..9 {
-            if self.board[i] == E {
-                let mut next: [State; 9] = self.board;
-                next[i] = if self.turn { O } else { X };
-
-                children.push((
-                    Decision::from_index(i),
-                    Board {
-                        board: next,
-                        turn: !self.turn,
-                    },
-                ));
-            }
-        }
-        children //return
+    pub fn legal_moves(self) -> Vec<usize> {
+        (0..9)
+            .filter(|&index| self.cells[index] == Mark::Empty)
+            .collect()
     }
 
-    pub fn is_win(self, turn: State) -> bool {
-        const WIN_LINES: [[usize; 3]; 8] = [
+    pub fn play(self, index: usize) -> Option<Self> {
+        if index >= 9 || self.cells[index] != Mark::Empty || self.is_terminal() {
+            return None;
+        }
+
+        let mut cells = self.cells;
+        cells[index] = self.next;
+        Some(Self {
+            cells,
+            next: self.next.opponent(),
+        })
+    }
+
+    pub fn winner(self) -> Option<Mark> {
+        const LINES: [[usize; 3]; 8] = [
             [0, 1, 2],
             [3, 4, 5],
             [6, 7, 8],
@@ -105,91 +68,22 @@ impl Board {
             [2, 4, 6],
         ];
 
-        let is_winner = WIN_LINES.iter().any(|line| {
-            let [a, b, c] = *line;
-
-            self.board[a] == turn
-                && self.board[a] == self.board[b]
-                && self.board[b] == self.board[c]
-        });
-
-        is_winner
+        LINES.iter().find_map(|[a, b, c]| {
+            let mark = self.cells[*a];
+            (mark != Mark::Empty && mark == self.cells[*b] && mark == self.cells[*c])
+                .then_some(mark)
+        })
     }
 
-    pub fn is_cats(self) -> bool {
-        let board_is_full = self.board.iter().all(|state| *state != State::E);
-
-        board_is_full
+    pub fn is_terminal(self) -> bool {
+        self.winner().is_some() || self.cells.iter().all(|mark| *mark != Mark::Empty)
     }
-}
 
-impl<T> Node<T> {
-    pub fn new(obj: T) -> Node<T> {
-        Node {
-            obj: obj,
-            children: Vec::new(),
+    pub fn outcome(self) -> i8 {
+        match self.winner() {
+            Some(Mark::X) => 1,
+            Some(Mark::O) => -1,
+            _ => 0,
         }
-    }
-
-    pub fn add(&mut self, child: Node<T>) {
-        self.children.push(child);
-    }
-
-    pub fn display(&self)
-    where
-        T: Display,
-    {
-        print!("{}, ", self.obj);
-        for child in &self.children {
-            child.display();
-        }
-    }
-}
-
-impl Display for State {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let character = match self {
-            E => "_",
-            O => "O",
-            X => "X",
-        };
-        write!(f, "{character}")
-    }
-}
-
-impl Display for Board {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}|{}|{}\n-+-+-\n{}|{}|{}\n-+-+-\n{}|{}|{}",
-            self.board[0],
-            self.board[1],
-            self.board[2],
-            self.board[3],
-            self.board[4],
-            self.board[5],
-            self.board[6],
-            self.board[7],
-            self.board[8],
-        )
-    }
-}
-
-impl Display for Decision {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let text = match self {
-            TL => "TL",
-            TM => "TM",
-            TR => "TR",
-            ML => "ML",
-            MM => "MM",
-            MR => "MR",
-            BL => "BL",
-            BM => "BM",
-            BR => "BR",
-            NA => "NA",
-        };
-
-        write!(f, "{text}")
     }
 }
